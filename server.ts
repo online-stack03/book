@@ -14,7 +14,20 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
     theme TEXT DEFAULT 'warm',
+    font_color TEXT DEFAULT null,
+    font_size INTEGER DEFAULT 16,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+
+// Create categories table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(name, user_id)
   )
 `);
 
@@ -23,6 +36,15 @@ try {
 } catch (e) {}
 try {
   db.exec("ALTER TABLE users ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP");
+} catch (e) {}
+try {
+  db.exec("ALTER TABLE users ADD COLUMN font_color TEXT DEFAULT null");
+} catch (e) {}
+try {
+  db.exec("ALTER TABLE users ADD COLUMN font_size INTEGER DEFAULT 16");
+} catch (e) {}
+try {
+  db.exec("ALTER TABLE users ADD COLUMN accent_color TEXT DEFAULT null");
 } catch (e) {}
 
 // Create entries table if it doesn't exist
@@ -52,6 +74,9 @@ try {
 } catch (e) {}
 try {
   db.exec("ALTER TABLE entries ADD COLUMN type TEXT DEFAULT 'normal'");
+} catch (e) {}
+try {
+  db.exec("ALTER TABLE entries ADD COLUMN category TEXT");
 } catch (e) {}
 try {
   db.exec("ALTER TABLE users ADD COLUMN pin TEXT");
@@ -128,6 +153,104 @@ async function startServer() {
     }
   });
 
+  app.put("/api/users/:id/font", (req, res) => {
+    try {
+      const { font_color, font_size, accent_color } = req.body;
+      db.prepare("UPDATE users SET font_color = ?, font_size = ?, accent_color = ? WHERE id = ?").run(font_color || null, font_size || 16, accent_color || null, req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Font update error:", error);
+      res.status(500).json({ error: "Failed to update font settings" });
+    }
+  });
+
+  app.post("/api/users/:id/import", (req, res) => {
+    try {
+      const { entries, expenses } = req.body;
+      const userId = req.params.id;
+
+      if (entries && Array.isArray(entries)) {
+        const insertEntry = db.prepare(`
+          INSERT INTO entries (user_id, content, image, mood, summary, activities, tags, type, category, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        const transaction = db.transaction((items) => {
+          for (const item of items) {
+            insertEntry.run(
+              userId,
+              item.content,
+              item.image || null,
+              item.mood || null,
+              item.summary || null,
+              item.activities || null,
+              item.tags || null,
+              item.type || 'normal',
+              item.category || null,
+              item.created_at || new Date().toISOString()
+            );
+          }
+        });
+        transaction(entries);
+      }
+
+      if (expenses && Array.isArray(expenses)) {
+        const insertExpense = db.prepare(`
+          INSERT INTO expenses (user_id, amount, category, description, date, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        const transaction = db.transaction((items) => {
+          for (const item of items) {
+            insertExpense.run(
+              userId,
+              item.amount,
+              item.category,
+              item.description || null,
+              item.date,
+              item.created_at || new Date().toISOString()
+            );
+          }
+        });
+        transaction(expenses);
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Import error:", error);
+      res.status(500).json({ error: "Failed to import data" });
+    }
+  });
+
+  app.get("/api/users/:id/categories", (req, res) => {
+    try {
+      const categories = db.prepare("SELECT * FROM categories WHERE user_id = ?").all(req.params.id);
+      res.json(categories);
+    } catch (error) {
+      console.error("Error fetching categories:", error);
+      res.status(500).json({ error: "Failed to fetch categories" });
+    }
+  });
+
+  app.post("/api/users/:id/categories", (req, res) => {
+    try {
+      const { name } = req.body;
+      const result = db.prepare("INSERT INTO categories (name, user_id) VALUES (?, ?)").run(name, req.params.id);
+      res.json({ id: result.lastInsertRowid, name });
+    } catch (error) {
+      console.error("Error creating category:", error);
+      res.status(400).json({ error: "Category already exists or failed to create" });
+    }
+  });
+
+  app.delete("/api/categories/:id", (req, res) => {
+    try {
+      db.prepare("DELETE FROM categories WHERE id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting category:", error);
+      res.status(500).json({ error: "Failed to delete category" });
+    }
+  });
+
   app.get("/api/entries", (req, res) => {
     try {
       const userId = req.query.userId || 1;
@@ -142,15 +265,15 @@ async function startServer() {
 
   app.post("/api/entries", (req, res) => {
     try {
-      const { content, image, mood, summary, activities, tags, type, userId } = req.body;
+      const { content, image, mood, summary, activities, tags, type, category, userId } = req.body;
       const uid = userId || 1;
       
       if (!content && !image) {
         return res.status(400).json({ error: "Content or image is required" });
       }
 
-      const stmt = db.prepare("INSERT INTO entries (content, image, mood, summary, activities, tags, type, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-      const info = stmt.run(content || "", image || null, mood || null, summary || null, activities ? JSON.stringify(activities) : null, tags ? JSON.stringify(tags) : null, type || 'normal', uid);
+      const stmt = db.prepare("INSERT INTO entries (content, image, mood, summary, activities, tags, type, category, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      const info = stmt.run(content || "", image || null, mood || null, summary || null, activities ? JSON.stringify(activities) : null, tags ? JSON.stringify(tags) : null, type || 'normal', category || null, uid);
       
       const newEntry = db.prepare("SELECT * FROM entries WHERE id = ?").get(info.lastInsertRowid);
       res.status(201).json(newEntry);

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Image as ImageIcon, Calendar, Clock, Trash2, PenLine, X, List, ChevronLeft, ChevronRight, Search, Mic, MicOff, BarChart2, Sparkles, User as UserIcon, LogOut, Palette, Lock, Download, CheckCircle2, Target, Wallet, Plus, PieChart as PieChartIcon } from 'lucide-react';
+import { Image as ImageIcon, Calendar, Clock, Trash2, PenLine, X, List, ChevronLeft, ChevronRight, Search, Mic, MicOff, BarChart2, Sparkles, User as UserIcon, LogOut, Palette, Lock, Download, CheckCircle2, Target, Wallet, Plus, PieChart as PieChartIcon, Upload, FileText, FileImage, Folder, FolderPlus, Layout, TrendingUp, Activity, DollarSign, CreditCard, PlusCircle, History, AlertCircle, Info, HelpCircle } from 'lucide-react';
 import { GoogleGenAI, Type } from '@google/genai';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
 import Markdown from 'react-markdown';
+import { jsPDF } from 'jspdf';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -11,8 +12,17 @@ interface User {
   id: number;
   username: string;
   theme: string;
+  font_color: string | null;
+  accent_color: string | null;
+  font_size: number;
   created_at?: string;
   hasPin?: boolean;
+}
+
+interface Category {
+  id: number;
+  name: string;
+  user_id: number;
 }
 
 interface DiaryEntry {
@@ -24,6 +34,7 @@ interface DiaryEntry {
   activities: string | null;
   tags: string | null;
   type?: string;
+  category?: string | null;
   created_at: string;
 }
 
@@ -56,6 +67,7 @@ export default function App() {
   const [expenseDesc, setExpenseDesc] = useState('');
   const [expenseDate, setExpenseDate] = useState(new Date().toISOString().split('T')[0]);
   const [expenseToDelete, setExpenseToDelete] = useState<number | null>(null);
+  const [categoryToDelete, setCategoryToDelete] = useState<number | null>(null);
   const [diaryDateFilter, setDiaryDateFilter] = useState('');
   
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -69,13 +81,26 @@ export default function App() {
   const [entryToDelete, setEntryToDelete] = useState<number | null>(null);
   const [newPin, setNewPin] = useState('');
 
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [fontColor, setFontColor] = useState<string>('');
+  const [accentColor, setAccentColor] = useState<string>('');
+  const [fontSize, setFontSize] = useState<number>(16);
+  const [isCreatingCategory, setIsCreatingCategory] = useState(false);
+  const [activeCategory, setActiveCategory] = useState<string>('all');
+
   useEffect(() => {
     const savedUser = localStorage.getItem('diary_user');
     if (savedUser) {
       const user = JSON.parse(savedUser);
       setCurrentUser(user);
+      setFontColor(user.font_color || '');
+      setAccentColor(user.accent_color || '');
+      setFontSize(user.font_size || 16);
       fetchEntries(user.id);
       fetchExpenses(user.id);
+      fetchCategories(user.id);
     }
   }, []);
 
@@ -145,6 +170,74 @@ export default function App() {
       }
     } catch (error) {
       console.error('Failed to fetch expenses:', error);
+    }
+  };
+
+  const fetchCategories = async (userId: number) => {
+    try {
+      const res = await fetch(`/api/users/${userId}/categories`);
+      if (res.ok) {
+        const data = await res.json();
+        setCategories(data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch categories:', error);
+    }
+  };
+
+  const handleCreateCategory = async () => {
+    if (!newCategoryName.trim() || !currentUser) return;
+    try {
+      const res = await fetch(`/api/users/${currentUser.id}/categories`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newCategoryName.trim() })
+      });
+      if (res.ok) {
+        const newCat = await res.json();
+        setCategories([...categories, newCat]);
+        setNewCategoryName('');
+      }
+    } catch (error) {
+      console.error('Failed to create category:', error);
+    }
+  };
+
+  const handleDeleteCategory = (id: number) => {
+    setCategoryToDelete(id);
+  };
+
+  const executeDeleteCategory = async () => {
+    if (!categoryToDelete) return;
+    try {
+      const res = await fetch(`/api/categories/${categoryToDelete}`, { method: 'DELETE' });
+      if (res.ok) {
+        setCategories(categories.filter(c => c.id !== categoryToDelete));
+        setCategoryToDelete(null);
+      }
+    } catch (error) {
+      console.error('Failed to delete category:', error);
+    }
+  };
+
+  const handleUpdateFont = async (color: string, size: number, accent?: string) => {
+    if (!currentUser) return;
+    try {
+      const res = await fetch(`/api/users/${currentUser.id}/font`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ font_color: color, font_size: size, accent_color: accent || accentColor })
+      });
+      if (res.ok) {
+        setFontColor(color);
+        setFontSize(size);
+        if (accent !== undefined) setAccentColor(accent);
+        const updatedUser = { ...currentUser, font_color: color, font_size: size, accent_color: accent || accentColor };
+        setCurrentUser(updatedUser);
+        localStorage.setItem('diary_user', JSON.stringify(updatedUser));
+      }
+    } catch (error) {
+      console.error('Failed to update font settings:', error);
     }
   };
 
@@ -255,6 +348,7 @@ export default function App() {
           activities: analysis.activities,
           tags: analysis.tags,
           type: entryType,
+          category: selectedCategory,
           userId: currentUser?.id
         }),
       });
@@ -265,6 +359,7 @@ export default function App() {
         setContent('');
         setImage(null);
         setEntryType('normal');
+        setSelectedCategory('');
         if (fileInputRef.current) {
           fileInputRef.current.value = '';
         }
@@ -545,6 +640,41 @@ export default function App() {
 
     const joinedDate = currentUser.created_at ? formatDate(currentUser.created_at) : '刚刚';
 
+    const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file || !currentUser) return;
+
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const data = JSON.parse(event.target?.result as string);
+          if (data.entries || data.expenses) {
+            if (confirm('导入数据将合并到当前账户中，确定继续吗？')) {
+              const res = await fetch(`/api/users/${currentUser.id}/import`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+              });
+              
+              if (res.ok) {
+                alert('数据导入成功！');
+                fetchEntries(currentUser.id);
+                fetchExpenses(currentUser.id);
+              } else {
+                alert('导入失败，请检查文件格式');
+              }
+            }
+          } else {
+            alert('无效的数据文件格式');
+          }
+        } catch (err) {
+          console.error('Import failed:', err);
+          alert('解析文件失败，请确保是有效的JSON格式');
+        }
+      };
+      reader.readAsText(file);
+    };
+
     return (
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
@@ -591,6 +721,94 @@ export default function App() {
 
           <div className="border-t border-[var(--border-light)] pt-8 text-left">
             <h3 className="text-lg font-bold text-[var(--text-primary)] font-sans mb-4 flex items-center gap-2">
+              <Palette className="w-5 h-5 text-[var(--accent)]" /> 
+              字体设置
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+              <div className="space-y-2">
+                <label className="text-xs text-[var(--text-muted)] uppercase font-bold">字体颜色</label>
+                <div className="flex gap-2">
+                  <input
+                    type="color"
+                    value={fontColor || '#000000'}
+                    onChange={(e) => handleUpdateFont(e.target.value, fontSize)}
+                    className="w-10 h-10 rounded-lg cursor-pointer bg-transparent border-none"
+                  />
+                  <button 
+                    onClick={() => handleUpdateFont('', fontSize)}
+                    className="px-3 py-1 text-xs bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border)]"
+                  >
+                    重置
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs text-[var(--text-muted)] uppercase font-bold">主题色</label>
+                <div className="flex gap-2">
+                  <input
+                    type="color"
+                    value={accentColor || '#5A5A40'}
+                    onChange={(e) => handleUpdateFont(fontColor, fontSize, e.target.value)}
+                    className="w-10 h-10 rounded-lg cursor-pointer bg-transparent border-none"
+                  />
+                  <button 
+                    onClick={() => handleUpdateFont(fontColor, fontSize, '')}
+                    className="px-3 py-1 text-xs bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border)]"
+                  >
+                    默认
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs text-[var(--text-muted)] uppercase font-bold">字体大小 ({fontSize}px)</label>
+                <input
+                  type="range"
+                  min="12"
+                  max="32"
+                  value={fontSize}
+                  onChange={(e) => handleUpdateFont(fontColor, parseInt(e.target.value))}
+                  className="w-full accent-[var(--accent)]"
+                />
+              </div>
+            </div>
+
+            <h3 className="text-lg font-bold text-[var(--text-primary)] font-sans mb-4 flex items-center gap-2">
+              <List className="w-5 h-5 text-[var(--accent)]" /> 
+              日记分类管理
+            </h3>
+            <div className="space-y-4 mb-8">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                  placeholder="新分类名称"
+                  className="flex-1 px-4 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/20 focus:border-[var(--accent)] font-sans"
+                />
+                <button
+                  onClick={handleCreateCategory}
+                  className="px-4 py-2 bg-[var(--accent)] text-white rounded-xl font-medium hover:bg-[var(--accent-hover)] transition-colors font-sans"
+                >
+                  添加
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {categories.map(cat => (
+                  <div key={cat.id} className="flex items-center gap-1 px-3 py-1.5 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-full group">
+                    <span className="text-sm font-sans">{cat.name}</span>
+                    <button 
+                      onClick={() => handleDeleteCategory(cat.id)}
+                      className="p-0.5 text-[var(--text-muted)] hover:text-red-500 rounded-full transition-colors"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+                {categories.length === 0 && <p className="text-sm text-[var(--text-muted)] italic">暂无自定义分类</p>}
+              </div>
+            </div>
+
+            <h3 className="text-lg font-bold text-[var(--text-primary)] font-sans mb-4 flex items-center gap-2">
               <Lock className="w-5 h-5 text-[var(--accent)]" /> 
               应用锁设置
             </h3>
@@ -615,14 +833,32 @@ export default function App() {
 
             <h3 className="text-lg font-bold text-[var(--text-primary)] font-sans mb-4 flex items-center gap-2">
               <Download className="w-5 h-5 text-[var(--accent)]" /> 
-              数据导出
+              数据管理
             </h3>
-            <button
-              onClick={exportData}
-              className="w-full py-3 bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl font-medium hover:bg-[var(--bg-primary)] transition-colors font-sans flex items-center justify-center gap-2"
-            >
-              <Download className="w-4 h-4" /> 导出所有数据 (JSON)
-            </button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-8">
+              <button
+                onClick={exportData}
+                className="py-3 bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl font-medium hover:bg-[var(--bg-primary)] transition-colors font-sans flex items-center justify-center gap-2"
+              >
+                <Download className="w-4 h-4" /> 备份 (JSON)
+              </button>
+              <label className="py-3 bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl font-medium hover:bg-[var(--bg-primary)] transition-colors font-sans flex items-center justify-center gap-2 cursor-pointer">
+                <Upload className="w-4 h-4" /> 导入数据
+                <input type="file" accept=".json" onChange={handleImport} className="hidden" />
+              </label>
+              <button
+                onClick={exportToTxt}
+                className="py-3 bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl font-medium hover:bg-[var(--bg-primary)] transition-colors font-sans flex items-center justify-center gap-2"
+              >
+                <FileText className="w-4 h-4" /> 导出文本 (TXT)
+              </button>
+              <button
+                onClick={exportToPdf}
+                className="py-3 bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border)] rounded-xl font-medium hover:bg-[var(--bg-primary)] transition-colors font-sans flex items-center justify-center gap-2"
+              >
+                <FileImage className="w-4 h-4" /> 导出图片 (PDF)
+              </button>
+            </div>
           </div>
         </div>
       </motion.div>
@@ -853,6 +1089,8 @@ export default function App() {
     
     if (!matchesContent && !matchesTags && !matchesActivities) return false;
 
+    if (activeCategory !== 'all' && entry.category !== activeCategory) return false;
+
     const safeDateStr = entry.created_at.replace(' ', 'T');
     const entryDate = new Date(safeDateStr.includes('Z') ? safeDateStr : safeDateStr + 'Z');
 
@@ -898,8 +1136,11 @@ export default function App() {
       if (res.ok) {
         const user = await res.json();
         setCurrentUser(user);
+        setFontColor(user.font_color || '');
+        setFontSize(user.font_size || 16);
         localStorage.setItem('diary_user', JSON.stringify(user));
         fetchEntries(user.id);
+        fetchCategories(user.id);
         setLoginPin('');
         setRequiresPin(false);
       }
@@ -942,6 +1183,77 @@ export default function App() {
     document.body.appendChild(downloadAnchorNode);
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
+  };
+
+  const exportToTxt = () => {
+    let text = `我的个人日记本 - ${currentUser?.username}\n`;
+    text += `导出日期: ${new Date().toLocaleString()}\n`;
+    text += `==========================================\n\n`;
+    
+    text += `【日记条目】\n\n`;
+    entries.forEach(entry => {
+      text += `日期: ${formatDate(entry.created_at)} ${formatTime(entry.created_at)}\n`;
+      if (entry.mood) text += `心情: ${getMoodEmoji(entry.mood)} (${entry.mood})\n`;
+      if (entry.summary) text += `摘要: ${entry.summary}\n`;
+      text += `内容:\n${entry.content}\n`;
+      if (entry.tags) text += `标签: ${JSON.parse(entry.tags).join(', ')}\n`;
+      text += `------------------------------------------\n\n`;
+    });
+
+    text += `\n【支出明细】\n\n`;
+    expenses.forEach(exp => {
+      text += `${exp.date} | ${exp.category} | ¥${exp.amount.toFixed(2)} | ${exp.description || ''}\n`;
+    });
+
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `diary_export_${currentUser?.username}_${new Date().toISOString().split('T')[0]}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportToPdf = () => {
+    const doc = new jsPDF();
+    let y = 20;
+    
+    doc.setFontSize(20);
+    doc.text(`Diary Images - ${currentUser?.username}`, 20, y);
+    y += 20;
+
+    const entriesWithImages = entries.filter(e => e.image);
+    
+    if (entriesWithImages.length === 0) {
+      doc.setFontSize(12);
+      doc.text("No images found in diary entries.", 20, y);
+      doc.save(`diary_images_${currentUser?.username}.pdf`);
+      return;
+    }
+
+    entriesWithImages.forEach((entry, index) => {
+      if (y > 250) {
+        doc.addPage();
+        y = 20;
+      }
+      
+      doc.setFontSize(10);
+      doc.text(`${formatDate(entry.created_at)} ${formatTime(entry.created_at)}`, 20, y);
+      y += 10;
+
+      if (entry.image) {
+        try {
+          // Add image to PDF. We assume it's a data URL.
+          doc.addImage(entry.image, 'JPEG', 20, y, 160, 100);
+          y += 110;
+        } catch (e) {
+          doc.text("[Image could not be processed]", 20, y);
+          y += 10;
+        }
+      }
+    });
+
+    doc.save(`diary_images_${currentUser?.username}_${new Date().toISOString().split('T')[0]}.pdf`);
   };
 
   const changeTheme = async (newTheme: string) => {
@@ -1033,10 +1345,20 @@ export default function App() {
     );
   }
 
-  const themeClass = currentUser.theme === 'dark' ? 'theme-dark' : currentUser.theme === 'light' ? 'theme-light' : '';
+  const themeClass = currentUser.theme === 'dark' ? 'theme-dark' : 
+                     currentUser.theme === 'light' ? 'theme-light' : 
+                     currentUser.theme === 'sepia' ? 'theme-sepia' : 
+                     currentUser.theme === 'blue' ? 'theme-blue' : 
+                     currentUser.theme === 'green' ? 'theme-green' : 
+                     currentUser.theme === 'sakura' ? 'theme-sakura' : '';
+
+  const customStyles = accentColor ? {
+    '--accent': accentColor,
+    '--accent-hover': accentColor + 'ee', // Subtle adjustment
+  } as React.CSSProperties : {};
 
   return (
-    <div className={`min-h-screen bg-[var(--bg-primary)] font-serif text-[var(--text-primary)] ${themeClass}`}>
+    <div className={`min-h-screen bg-[var(--bg-primary)] font-serif text-[var(--text-primary)] ${themeClass}`} style={customStyles}>
       <div className="max-w-2xl mx-auto px-4 py-12">
         <header className="mb-8 text-center relative">
           <div className="absolute right-0 top-0">
@@ -1076,6 +1398,18 @@ export default function App() {
                       </button>
                       <button onClick={() => changeTheme('dark')} className={`w-full text-left px-3 py-2 text-sm font-sans rounded-xl flex items-center gap-2 ${currentUser.theme === 'dark' ? 'bg-[var(--bg-tertiary)] text-[var(--accent)]' : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'}`}>
                         <Palette className="w-4 h-4" /> 深色
+                      </button>
+                      <button onClick={() => changeTheme('sepia')} className={`w-full text-left px-3 py-2 text-sm font-sans rounded-xl flex items-center gap-2 ${currentUser.theme === 'sepia' ? 'bg-[var(--bg-tertiary)] text-[var(--accent)]' : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'}`}>
+                        <Palette className="w-4 h-4" /> 复古
+                      </button>
+                      <button onClick={() => changeTheme('blue')} className={`w-full text-left px-3 py-2 text-sm font-sans rounded-xl flex items-center gap-2 ${currentUser.theme === 'blue' ? 'bg-[var(--bg-tertiary)] text-[var(--accent)]' : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'}`}>
+                        <Palette className="w-4 h-4" /> 蔚蓝
+                      </button>
+                      <button onClick={() => changeTheme('green')} className={`w-full text-left px-3 py-2 text-sm font-sans rounded-xl flex items-center gap-2 ${currentUser.theme === 'green' ? 'bg-[var(--bg-tertiary)] text-[var(--accent)]' : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'}`}>
+                        <Palette className="w-4 h-4" /> 翠绿
+                      </button>
+                      <button onClick={() => changeTheme('sakura')} className={`w-full text-left px-3 py-2 text-sm font-sans rounded-xl flex items-center gap-2 ${currentUser.theme === 'sakura' ? 'bg-[var(--bg-tertiary)] text-[var(--accent)]' : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'}`}>
+                        <Palette className="w-4 h-4" /> 樱花
                       </button>
                     </div>
                     <div className="p-2 border-t border-[var(--border-light)]">
@@ -1164,6 +1498,19 @@ export default function App() {
               >
                 <CheckCircle2 className="w-4 h-4" /> 成功日记
               </button>
+              
+              <div className="h-8 w-px bg-[var(--border-light)] mx-1 shrink-0" />
+              
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                className="px-4 py-2 bg-[var(--bg-primary)] text-[var(--text-secondary)] border border-[var(--border)] rounded-full text-sm font-sans font-medium focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/20 focus:border-[var(--accent)]"
+              >
+                <option value="">选择分类</option>
+                {categories.map(cat => (
+                  <option key={cat.id} value={cat.name}>{cat.name}</option>
+                ))}
+              </select>
             </div>
             <div className="relative">
               <textarea
@@ -1272,137 +1619,198 @@ export default function App() {
 
         {/* Entries List */}
         {(viewMode === 'list' || viewMode === 'calendar') && (
-        <div className="space-y-8">
-          <AnimatePresence>
-            {displayedEntries.map((entry) => (
-              <motion.article
-                key={entry.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className="bg-[var(--bg-secondary)] rounded-3xl shadow-sm overflow-hidden border border-[var(--border)]"
-              >
-                {entry.image && (
-                  <div className="w-full max-h-[500px] overflow-hidden">
-                    <img 
-                      src={entry.image} 
-                      alt="Diary entry" 
-                      className="w-full h-full object-cover hover:scale-105 transition-transform duration-700"
-                    />
-                  </div>
-                )}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-8">
+          {/* Sidebar - Categories */}
+          <div className="md:col-span-3 space-y-6">
+            <div className="bg-[var(--bg-secondary)] rounded-3xl p-2 border border-[var(--border)] shadow-sm">
+              <div className="px-4 py-3 border-b border-[var(--border-light)] mb-2">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">我的文件夹</h3>
+              </div>
+              <nav className="space-y-0.5">
+                <div 
+                  onClick={() => setActiveCategory('all')}
+                  className={`notes-sidebar-item ${activeCategory === 'all' ? 'active' : ''}`}
+                >
+                  <Layout className="w-4 h-4" />
+                  <span>全部日记</span>
+                  <span className="ml-auto text-xs opacity-60">{entries.length}</span>
+                </div>
+                <div 
+                  onClick={() => setActiveCategory('review')}
+                  className={`notes-sidebar-item ${activeCategory === 'review' ? 'active' : ''}`}
+                >
+                  <Target className="w-4 h-4" />
+                  <span>每日复盘</span>
+                  <span className="ml-auto text-xs opacity-60">{entries.filter(e => e.type === 'review').length}</span>
+                </div>
+                <div 
+                  onClick={() => setActiveCategory('success')}
+                  className={`notes-sidebar-item ${activeCategory === 'success' ? 'active' : ''}`}
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>成功日记</span>
+                  <span className="ml-auto text-xs opacity-60">{entries.filter(e => e.type === 'success').length}</span>
+                </div>
                 
-                <div className="p-6 sm:p-8">
-                  <div className="flex flex-wrap items-center justify-between gap-4 mb-6 text-[var(--text-secondary)] font-sans text-sm">
-                    <div className="flex items-center gap-4">
-                      {entry.type && entry.type !== 'normal' && (
-                        <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium text-white ${entry.type === 'review' ? 'bg-blue-500' : 'bg-orange-500'}`}>
-                          {entry.type === 'review' ? <Target className="w-3.5 h-3.5" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                          {entry.type === 'review' ? '每日复盘' : '成功日记'}
-                        </div>
-                      )}
-                      <div className="flex items-center gap-1.5">
-                        <Calendar className="w-4 h-4" />
-                        {formatDate(entry.created_at)}
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <Clock className="w-4 h-4" />
-                        {formatTime(entry.created_at)}
-                      </div>
-                      {entry.mood && (
-                        <div className="flex items-center gap-1.5 bg-[var(--bg-primary)] px-2 py-1 rounded-full">
-                          <span className="text-base leading-none">{getMoodEmoji(entry.mood)}</span>
-                        </div>
-                      )}
-                    </div>
-                    
-                    <button
-                      onClick={() => confirmDelete(entry.id)}
-                      className="p-2 text-[var(--text-muted)] hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
-                      title="删除日记"
+                <div className="h-px bg-[var(--border-light)] my-2 mx-2" />
+                
+                {categories.map(cat => (
+                  <div 
+                    key={cat.id}
+                    onClick={() => setActiveCategory(cat.name)}
+                    className={`notes-sidebar-item group ${activeCategory === cat.name ? 'active' : ''}`}
+                  >
+                    <Folder className="w-4 h-4" />
+                    <span className="truncate">{cat.name}</span>
+                    <span className="ml-auto text-xs opacity-60 group-hover:hidden">{entries.filter(e => e.category === cat.name).length}</span>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); handleDeleteCategory(cat.id); }}
+                      className="ml-auto hidden group-hover:block p-1 hover:text-red-500 transition-colors"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <X className="w-3 h-3" />
                     </button>
                   </div>
-                  
-                  {entry.summary && (
-                    <div className="mb-4 p-4 bg-[var(--bg-tertiary)] rounded-2xl border border-[var(--border-light)] flex gap-3 items-start">
-                      <Sparkles className="w-5 h-5 text-[var(--accent)] shrink-0 mt-0.5" />
-                      <p className="text-sm font-sans text-[var(--accent)] font-medium leading-relaxed">
-                        {entry.summary}
-                      </p>
-                    </div>
-                  )}
-                  
-                  {entry.content && (
-                    <div className="prose prose-stone max-w-none mb-4">
-                      <p className="text-lg leading-relaxed whitespace-pre-wrap font-sans text-[var(--text-primary)]">
-                        {entry.content}
-                      </p>
-                    </div>
-                  )}
-
-                  {(entry.tags || entry.activities) && (
-                    <div className="mt-4 pt-4 border-t border-[var(--border-light)] flex flex-col gap-3">
-                      {entry.tags && (() => {
-                        try {
-                          const tags = JSON.parse(entry.tags);
-                          if (tags.length > 0) {
-                            return (
-                              <div className="flex flex-wrap gap-2">
-                                {tags.map((tag: string, i: number) => (
-                                  <button 
-                                    key={i} 
-                                    onClick={() => setSearchQuery(tag)}
-                                    className="px-3 py-1 bg-[var(--accent)]/10 text-[var(--accent)] text-xs font-sans rounded-full hover:bg-[var(--accent)]/20 transition-colors"
-                                  >
-                                    #{tag}
-                                  </button>
-                                ))}
-                              </div>
-                            );
-                          }
-                        } catch (e) {}
-                        return null;
-                      })()}
-
-                      {entry.activities && (() => {
-                        try {
-                          const acts = JSON.parse(entry.activities);
-                          if (acts.length > 0) {
-                            return (
-                              <div className="flex flex-wrap gap-2">
-                                {acts.map((act: string, i: number) => (
-                                  <span key={i} className="px-3 py-1 bg-[var(--bg-primary)] text-[var(--text-secondary)] text-xs font-sans rounded-full">
-                                    {act}
-                                  </span>
-                                ))}
-                              </div>
-                            );
-                          }
-                        } catch (e) {}
-                        return null;
-                      })()}
-                    </div>
-                  )}
-                </div>
-              </motion.article>
-            ))}
-          </AnimatePresence>
-          
-          {displayedEntries.length === 0 && (
-            <div className="text-center py-12 text-[var(--text-secondary)]">
-              <p className="text-lg italic">
-                {searchQuery 
-                  ? '没有找到匹配的日记。'
-                  : diaryDateFilter
-                    ? '所选日期没有日记。'
-                    : viewMode === 'calendar' 
-                      ? (selectedDate ? '这一天没有日记。' : '这个月没有日记。') 
-                      : '还没有日记，开始记录你的第一篇吧...'}
-              </p>
+                ))}
+              </nav>
+              
+                {isCreatingCategory ? (
+                  <div className="px-3 py-2">
+                    <input
+                      autoFocus
+                      type="text"
+                      value={newCategoryName}
+                      onChange={(e) => setNewCategoryName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleCreateCategory();
+                          setIsCreatingCategory(false);
+                        }
+                        if (e.key === 'Escape') setIsCreatingCategory(false);
+                      }}
+                      onBlur={() => {
+                        if (newCategoryName.trim()) handleCreateCategory();
+                        setIsCreatingCategory(false);
+                      }}
+                      placeholder="文件夹名称"
+                      className="w-full px-3 py-1.5 text-sm bg-[var(--bg-primary)] border border-[var(--accent)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/20 font-sans"
+                    />
+                  </div>
+                ) : (
+                  <button 
+                    onClick={() => setIsCreatingCategory(true)}
+                    className="w-full mt-2 flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-[var(--accent)] hover:bg-[var(--bg-tertiary)] rounded-xl transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>新建文件夹</span>
+                  </button>
+                )}
             </div>
-          )}
+
+            <div className="bg-[var(--bg-secondary)] rounded-3xl p-6 border border-[var(--border)] shadow-sm">
+              <h3 className="mb-4 text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">统计</h3>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-[var(--text-secondary)]">总计</span>
+                  <span className="text-sm font-bold">{entries.length} 篇</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-[var(--text-secondary)]">本月</span>
+                  <span className="text-sm font-bold">
+                    {entries.filter(e => new Date(e.created_at).getMonth() === new Date().getMonth()).length} 篇
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Main List */}
+          <div className="md:col-span-9 space-y-4">
+            <div className="bg-[var(--bg-secondary)] rounded-3xl shadow-sm border border-[var(--border)] overflow-hidden">
+              <div className="divide-y divide-[var(--border-light)]">
+                <AnimatePresence mode="popLayout">
+                  {displayedEntries.length > 0 ? (
+                    displayedEntries.map((entry) => (
+                      <motion.div
+                        key={entry.id}
+                        layout
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className={`notes-list-item group ${selectedDate && formatDate(entry.created_at) === formatDate(selectedDate.toISOString()) ? 'active' : ''}`}
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              {entry.type && entry.type !== 'normal' && (
+                                <span className={`w-2 h-2 rounded-full shrink-0 ${entry.type === 'review' ? 'bg-blue-500' : 'bg-orange-500'}`} />
+                              )}
+                              <h4 className="text-base font-bold truncate text-[var(--text-primary)]">
+                                {entry.content.split('\n')[0] || '无标题'}
+                              </h4>
+                              {entry.image && <ImageIcon className="w-3.5 h-3.5 text-[var(--text-muted)] shrink-0" />}
+                            </div>
+                            <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+                              <span className="whitespace-nowrap font-medium">{formatTime(entry.created_at)}</span>
+                              <p className="truncate opacity-70">
+                                {entry.summary || entry.content.split('\n').slice(1).join(' ').trim() || '没有更多内容'}
+                              </p>
+                            </div>
+                            <div className="mt-2 flex items-center gap-2">
+                              <span className="text-[10px] text-[var(--text-muted)] font-sans">{formatDate(entry.created_at)}</span>
+                              {entry.category && (
+                                <div className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold text-[var(--accent)] bg-[var(--accent)]/10 px-2 py-0.5 rounded">
+                                  <Folder className="w-2.5 h-2.5" />
+                                  {entry.category}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => confirmDelete(entry.id)}
+                              className="p-2 text-[var(--text-muted)] hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 hidden group-hover:block animate-in fade-in slide-in-from-top-2 duration-300">
+                           {entry.image && (
+                            <div className="mb-4 rounded-xl overflow-hidden max-h-60 border border-[var(--border-light)]">
+                              <img src={entry.image} alt="" className="w-full h-full object-cover" />
+                            </div>
+                           )}
+                           <div 
+                            className="text-sm text-[var(--text-secondary)] prose prose-sm max-w-none"
+                            style={{ color: fontColor || 'var(--text-primary)', fontSize: `${fontSize}px` }}
+                           >
+                            <Markdown>{entry.content}</Markdown>
+                           </div>
+                           {entry.tags && (
+                             <div className="mt-4 flex flex-wrap gap-2">
+                               {JSON.parse(entry.tags).map((tag: string) => (
+                                 <span key={tag} className="text-[10px] bg-[var(--bg-tertiary)] text-[var(--text-muted)] px-2 py-0.5 rounded-full border border-[var(--border-light)]">#{tag}</span>
+                               ))}
+                             </div>
+                           )}
+                        </div>
+                      </motion.div>
+                    ))
+                  ) : (
+                    <div className="p-12 text-center">
+                      <div className="w-16 h-16 bg-[var(--bg-primary)] rounded-full flex items-center justify-center mx-auto mb-4">
+                        <FileText className="w-8 h-8 text-[var(--text-muted)]" />
+                      </div>
+                      <h3 className="text-lg font-bold text-[var(--text-primary)] mb-1">没有找到日记</h3>
+                      <p className="text-[var(--text-secondary)]">尝试更换分类或搜索关键词</p>
+                    </div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </div>
+          </div>
         </div>
         )}
       </div>
@@ -1466,6 +1874,39 @@ export default function App() {
                 </button>
                 <button
                   onClick={executeDeleteExpense}
+                  className="px-4 py-2 bg-red-500 text-white rounded-xl hover:bg-red-600 font-sans font-medium transition-colors"
+                >
+                  确定删除
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {categoryToDelete !== null && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-[var(--bg-secondary)] rounded-3xl shadow-xl p-6 max-w-sm w-full border border-[var(--border)]"
+            >
+              <h3 className="text-xl font-bold text-[var(--text-primary)] font-sans mb-2">确认删除分类</h3>
+              <p className="text-[var(--text-secondary)] font-sans mb-6">您确定要删除这个分类吗？日记条目不会被删除，但将不再属于此分类。</p>
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => setCategoryToDelete(null)}
+                  className="px-4 py-2 rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-primary)] font-sans font-medium transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={executeDeleteCategory}
                   className="px-4 py-2 bg-red-500 text-white rounded-xl hover:bg-red-600 font-sans font-medium transition-colors"
                 >
                   确定删除
